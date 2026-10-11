@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MQTT Flashlight, 어딘가 스산한 복도에 떨어진 주인공</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden;
+    font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  #안내 { position:fixed; left:0; right:0; top:0; z-index:10;
+    background:rgba(20,24,32,.85); color:#fff; padding:10px 14px; font-size:14px; line-height:1.5; }
+  #안내 b { color:#ccd0ab; }
+  #패널 { position:fixed; left:14px; top:72px; z-index:10; width:270px;
+    background:rgba(20,24,32,.88); color:#eef2f8; border:1px solid #2e3849; border-radius:12px; padding:12px 14px; }
+  #패널 h2 { font-size:13px; margin:0 0 8px; color:#ccd0ab; font-weight:600; }
+  label { font-size:13px; color:#9fb0c6; display:block; margin-bottom:5px; }
+  input { width:100%; font:inherit; font-size:18px; padding:9px; border-radius:8px;
+    border:1px solid #2e3849; background:#0e1219; color:#fff; text-align:center; letter-spacing:.12em; box-sizing:border-box; }
+  button { width:100%; font:inherit; font-size:15px; font-weight:700; padding:11px; margin-top:9px;
+    border:0; border-radius:10px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button:hover { background:#1f57c8; }
+  button.gray { background:#3a4657; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; font-size:13px; }
+  .row .k { color:#9fb0c6; }
+  .row .v { font-variant-numeric:tabular-nums; font-weight:700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#666; margin-right:6px; }
+  .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; }
+  .dot.err { background:#ff7676; }
+  hr { border:0; border-top:1px solid #2e3849; margin:11px 0; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#9fe8b4;
+    background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; line-height:1.5; margin-top:6px; }
+  #문상태 { position:fixed; right:14px; top:72px; z-index:10;
+    background:rgba(20,24,32,.88); color:#fff; border:1px solid #2e3849; border-radius:12px;
+    padding:14px 20px; font-size:22px; font-weight:800; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+</style>
+</head>
+<body>
+
+<div id="안내">
+  <b>끝이 없는 복도</b> — 1인칭 손전등 프로젝트 · 지금은 배경을 확인하는 단계입니다.<br>
+  차가운 천장등 아래, 문과 옆길이 반복되는 복도입니다. 손전등 모델의 크기와 방향을 확인하세요.
+</div>
+<details id="패널">
+  <summary>MQTT 연결 · 다음 단계용</summary>
+  <label>폰에서 쓴 것과 같은 ID</label>
+  <input id="idInput" maxlength="12" placeholder="예: 1234">
+  <button id="connBtn">연결</button>
+  <button id="disconnBtn" class="gray" style="display:none">연결 끊기</button>
+  <hr>
+  <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+  <div class="row"><span class="k">받은 메시지</span><span class="v" id="count">0</span></div>
+  <div class="row"><span class="k">수신 속도</span><span class="v" id="rate">0 /s</span></div>
+  <div class="row"><span class="k">지연</span><span class="v" id="latency">– ms</span></div>
+  <div id="payload">아직 받은 값이 없습니다.</div>
+</details>
+<div id="작업등패널"><div id="modelState" style="color:#ccd0ab;font-size:12px;max-width:300px">손전등 모델 불러오는 중…</div><button id="flipModel" class="gray">모델 앞뒤 뒤집기</button><button id="작업등버튼" aria-pressed="true">손전등 끄기</button></div>
+<style>
+  summary { cursor:pointer; color:#ccd0ab; font-size:13px; }
+  #패널 label { margin-top:12px; }
+  #작업등패널 { position:fixed; right:18px; bottom:18px; z-index:10; }
+  #작업등버튼 { background:#646b50; width:auto; padding:12px 20px; }
+  @media(max-width:600px) { #안내 { font-size:12px; } #패널 { top:100px; width:220px; } }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<!-- MQTT.js 는 일반 스크립트로 먼저 읽습니다 (전역 mqtt) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// twin-subscribe.html에서 장면과 MQTT 구조를 가져왔습니다.
+// ① 직접 조절해볼 값: 복도 길이, 안개 농도, 기본 밝기.
+// 좌우 X / 위아래 Y / 앞뒤 Z. 카메라는 -Z를 봅니다.
+const ROOM = { width: 4.8, depth: 120, height: 3.1 };
+const PALETTE = {
+  wall: 0xa7a077, floor: 0x66634c, ceiling: 0x858777,
+  trim: 0x575646, wood: 0x534c39, cloth: 0x6c756b, lamp: 0xdce5af
+};
+const LIGHTING = { night: 0.01, work: 1.3, fog: 0.043 };
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x161b16);
+scene.fog = new THREE.FogExp2(0x161b16, LIGHTING.fog);
+const camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.05, 150);
+camera.position.set(-0.45, 1.58, 3.2);
+camera.lookAt(0, 1.5, -35);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+// ② 외부 이미지 없이 벽지와 카펫 무늬를 만듭니다.
+// 고정된 난수로 새로고침해도 동일한 무늬가 나옵니다.
+let seed = 27;
+function random() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+function surfaceTexture(kind) {
+  const canvas = document.createElement('canvas'); canvas.width=256; canvas.height=256;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = kind === 'wall' ? '#c0b990' : '#8b8770'; ctx.fillRect(0,0,256,256);
+  for (let i=0;i<12000;i++) {
+    ctx.fillStyle = random()>0.5 ? 'rgba(32,38,23,0.10)' : 'rgba(231,224,182,0.09)';
+    ctx.fillRect(random()*256,random()*256,kind==='wall'?1:2,1);
+  }
+  if (kind === 'wall') {
+    ctx.strokeStyle='rgba(94,107,87,0.25)'; ctx.lineWidth=1;
+    for(let x=16;x<256;x+=32) {
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,256); ctx.stroke();
+      for(let y=16;y<256;y+=48) {
+        ctx.beginPath(); ctx.moveTo(x-7,y+7); ctx.lineTo(x,y); ctx.lineTo(x+7,y+7); ctx.stroke();
+      }
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace=THREE.SRGBColorSpace;
+  texture.wrapS=texture.wrapT=THREE.RepeatWrapping;
+  return texture;
+}
+const wallpaper=surfaceTexture('wall'), carpet=surfaceTexture('floor');
+const materials = new Map();
+function material(color, kind) {
+  const key = `${color}/${kind}`;
+  if(!materials.has(key)) materials.set(key,new THREE.MeshStandardMaterial({
+    color, roughness:1, map:kind==='wall'?wallpaper:kind==='floor'?carpet:null
+  }));
+  return materials.get(key);
+}
+const objects = {};
+function box(parent,size,pos,color,kind) {
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(...size),material(color,kind));
+  // 실제 면 크기에 맞춰 UV를 반복해 긴 벽에서도 무늬가 늘어나지 않습니다.
+  if(kind) {
+    const uv=mesh.geometry.attributes.uv;
+    for(let i=0;i<uv.count;i++) {
+      const face=Math.floor(i/4);
+      const w=face<2?size[2]:size[0], h=face<2?size[1]:face<4?size[2]:size[1];
+      uv.setXY(i,uv.getX(i)*w*2,uv.getY(i)*h*2);
+    }
+  }
+  mesh.position.set(...pos); mesh.castShadow=true; mesh.receiveShadow=true;
+  parent.add(mesh); return mesh;
+}
+function furniture(name,pos,build) {
+  const g=new THREE.Group(); g.position.set(...pos); build(g); scene.add(g); objects[name]=g; return g;
+}
+const ambient=new THREE.AmbientLight(0xc4cdb0,LIGHTING.night); scene.add(ambient);
+const workLight=new THREE.PointLight(0xe0e4bf,65,24,2);
+workLight.position.set(0,2.7,0); workLight.visible=false; scene.add(workLight);
+
+// ③ 끝을 막는 벽 없이 길게 반복하는 복도. 끝부분은 안개에 묻힙니다.
+box(scene,[12,0.12,ROOM.depth],[0,-0.06,-54],PALETTE.floor,'floor');
+box(scene,[12,0.12,ROOM.depth],[0,3.16,-54],PALETTE.ceiling);
+box(scene,[12,3.1,0.15],[0,1.55,6],PALETTE.wall,'wall');
+for(let i=0;i<20;i++) {
+  const z=2-i*6;
+  // 양옆 벽 사이의 빈 구간이 어두운 옆 복도로 열립니다.
+  for(const side of [-1,1]) {
+    const x=side*2.55;
+    box(scene,[0.25,3.1,4.6],[x,1.55,z-1.7],PALETTE.wall,'wall');
+    box(scene,[0.29,0.16,4.6],[x-side*0.025,0.08,z-1.7],PALETTE.trim);
+    box(scene,[0.25,0.48,1.4],[x,2.86,z+1.3],PALETTE.wall,'wall');
+    box(scene,[0.15,3.1,6],[side*5.8,1.55,z],PALETTE.wall,'wall');
+    // 문처럼 보이지만 손잡이가 없는 반복 패널.
+    box(scene,[0.08,2.35,1.05],[x-side*0.17,1.18,z-2.3],PALETTE.trim);
+    box(scene,[0.09,2.2,0.89],[x-side*0.22,1.12,z-2.3],0x77755b);
+    for(let h=0.5;h<2.1;h+=0.27)
+      box(scene,[0.025,0.025,0.78],[x-side*0.275,h,z-2.3],0x5d604f);
+  }
+  // 프레임이 반복되어 원근감을 강조합니다.
+  box(scene,[5.1,0.18,0.24],[0,3,z],PALETTE.trim);
+  for(const x of [-2.36,2.36]) box(scene,[0.12,3,0.22],[x,1.5,z],PALETTE.trim);
+  const fixture=box(scene,[1.15,0.035,0.7],[0,3.07,z-1],0x676b56);
+  const lit=i%4!==2;
+  if(lit) {
+    fixture.material=new THREE.MeshStandardMaterial({color:PALETTE.lamp,
+      emissive:PALETTE.lamp,emissiveIntensity:i<3?0.5:0.3});
+    // 앞쪽 등만 실제 조명을 추가해 GPU 부담을 줄입니다.
+    if(i<5) {
+      const light=new THREE.PointLight(PALETTE.lamp,i===1?2:4,10,2);
+      light.position.set(0,2.8,z-1); scene.add(light);
+      if(i===0) { light.castShadow=true; light.shadow.mapSize.set(512,512); }
+    }
+  }
+}
+// 천장 타일 줄눈
+for(let z=5;z>-114;z-=1.5) box(scene,[5,0.008,0.018],[0,3.095,z],0x626654);
+for(const x of [-1.6,1.6]) box(scene,[0.018,0.008,120],[x,3.095,-54],0x626654);
+
+// ④ 오른쪽 옆 공간의 기묘한 가구 더미. 익숙한 물건을 어긋나게 쌓습니다.
+furniture('가구 더미',[3.65,0,1.3],g=>{
+  box(g,[1.4,0.8,0.8],[0,0.4,0],PALETTE.wood);
+  for(const y of [0.2,0.47,0.72]) {
+    box(g,[1.25,0.018,0.025],[0,y,0.42],0x302f28);
+    box(g,[0.22,0.035,0.055],[0,y+0.08,0.45],0x85806b);
+  }
+  const couch=new THREE.Group(); couch.position.set(-0.2,0.8,0); couch.rotation.z=-0.2; g.add(couch);
+  box(couch,[1.4,0.30,0.8],[0,0.15,0],PALETTE.cloth);
+  box(couch,[1.4,0.6,0.18],[0,0.6,-0.3],PALETTE.cloth);
+  for(const x of [-0.6,0.6]) box(couch,[0.2,0.4,0.8],[x,0.42,0],PALETTE.cloth);
+  const chair=new THREE.Group(); chair.position.set(0.1,1.6,0); chair.rotation.set(0.15,0.4,0.58);g.add(chair);
+  box(chair,[0.55,0.1,0.55],[0,0,0],PALETTE.wood);
+  for(const x of [-0.22,0.22])for(const z of [-0.22,0.22])
+    box(chair,[0.06,0.5,0.06],[x,-0.3,z],PALETTE.wood);
+  for(const x of [-0.22,0.22])box(chair,[0.055,0.65,0.055],[x,0.35,-0.22],PALETTE.wood);
+  box(chair,[0.5,0.13,0.07],[0,0.6,-0.22],PALETTE.wood);
+  const tv=new THREE.Group();tv.position.set(-0.45,1.7,0.32);tv.rotation.z=-0.18;g.add(tv);
+  box(tv,[0.65,0.5,0.45],[0,0,0],0x343b36);
+  box(tv,[0.49,0.35,0.03],[-0.035,0,0.24],0x131e1c);
+});
+// 액자 속 그림은 비어 있고, 조금씩 기울어져 있습니다.
+for(const [z,tilt] of [[-1,0.07],[-13,-0.1],[-25,0.15]]) {
+  const frame=furniture(`빈 액자 ${z}`,[-2.36,1.85,z],g=>{
+    box(g,[0.065,0.68,0.52],[0,0,0],PALETTE.wood);
+    box(g,[0.025,0.53,0.37],[0.045,0,0],0x3c4236);
+  });frame.rotation.x=tilt;
+}
+
+// ⑤ 손전등 모델 로딩. 이번 단계는 화면 배치까지이며, 센서 회전은 다음 단계입니다.
+// 수정할 값: length는 미터, position은 카메라 기준 위치입니다.
+const FLASHLIGHT = { length:0.48, position:[0.24,-0.23,-0.52], flip:true };
+const flashlightPivot = new THREE.Group();
+flashlightPivot.position.set(...FLASHLIGHT.position);
+camera.add(flashlightPivot); scene.add(camera);
+const modelOrientation = new THREE.Group(); flashlightPivot.add(modelOrientation);
+// 원본 모델은 X축으로 길게 만들어져 있습니다. +X를 화면 안쪽(-Z)으로 돌립니다.
+modelOrientation.rotation.y = FLASHLIGHT.flip ? -Math.PI / 2 : Math.PI / 2;
+// 금속 재질을 확인하는 작은 보조등. 주변 복도를 밝히지 않도록 거리를 제한합니다.
+const modelFill = new THREE.PointLight(0xdde3ce,0.65,0.9,2);
+modelFill.position.set(0.05,0.03,-0.25); camera.add(modelFill);
+const modelState = document.getElementById('modelState');
+new GLTFLoader().load('./Flashlight.glb', gltf => {
+  const model = gltf.scene;
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const longest = Math.max(size.x,size.y,size.z);
+  if (!Number.isFinite(longest) || longest <= 0) {
+    modelState.textContent = '모델 크기를 확인할 수 없습니다.'; return;
+  }
+  // 원본 중심을 원점으로 옮긴 뒤, 부모 Group에서 실제 크기를 조절합니다.
+  model.position.sub(center);
+  const normalized = new THREE.Group(); normalized.add(model);
+  normalized.scale.setScalar(FLASHLIGHT.length / longest);
+  modelOrientation.add(normalized);
+  model.traverse(object => {
+    if (object.isMesh) { object.castShadow=true; object.receiveShadow=true; }
+  });
+  modelState.textContent = '모델 로딩 완료 · 렌즈가 복도 쪽을 향하는지 확인하세요.';
+}, undefined, error => {
+  console.error('손전등 GLB 로딩 실패',error);
+  modelState.textContent = '모델 로딩 실패 · 로컬 서버로 열고 Flashlight.glb 경로를 확인하세요.';
+});
+document.getElementById('flipModel').addEventListener('click', () => {
+  FLASHLIGHT.flip = !FLASHLIGHT.flip;
+  modelOrientation.rotation.y = FLASHLIGHT.flip ? -Math.PI/2 : Math.PI/2;
+});
+
+const beam = new THREE.SpotLight(
+  0xe8edd5, 
+  180,
+  12, 
+  THREE.MathUtils.degToRad(12), 
+  0.8, 
+  2
+);
+
+beam.position.set(0, 0, -0.26);
+
+const beamTarget = new THREE.Object3D();
+beamTarget.position.set(0, -1, -5);
+beam.target = beamTarget;
+
+flashlightPivot.add(beam, beamTarget);
+
+beam.castShadow = true;
+beam.shadow.mapSize.set(1024, 1024);
+beam.shadow.camera.near = 0.05;
+beam.shadow.camera.far = 20;
+beam.shadow.normalBias = 0.02;
+
+const workButton = document.getElementById('작업등버튼');
+workButton.addEventListener('click', () => {
+  beam.visible = !beam.visible;
+  workButton.textContent = beam.visible ? '손전등 끄기' : '손전등 켜기';
+  workButton.setAttribute('aria-pressed', String(beam.visible));
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+
+// ④ MQTT 수신은 유지합니다. 손전등 제작 후 이 함수에서 회전에 연결합니다.
+const sensor = { alpha:0, beta:0, gamma:0 };
+function 센서반영(d) {
+  if (!d || typeof d !== 'object') return;
+  for (const key of ['alpha','beta','gamma']) {
+  if (Number.isFinite(d[key])) {
+      sensor[key] = d[key];
+    }
+  }
+
+  if (
+  neutral === null &&
+  Number.isFinite(d.beta) &&
+  Number.isFinite(d.gamma)
+  ) {
+  neutral = { beta: d.beta, gamma: d.gamma };
+  }
+}
+
+let neutral = null;
+
+renderer.setAnimationLoop(() => {
+
+  const { beta, gamma } = sensor;
+
+  if (neutral !== null) {
+    const pitch = THREE.MathUtils.clamp(beta - neutral.beta, -50, 50);
+    const yaw = THREE.MathUtils.clamp(gamma - neutral.gamma, -60, 60);
+
+    const targetX = THREE.MathUtils.degToRad(pitch);
+    const targetY = THREE.MathUtils.degToRad(-yaw);
+
+    flashlightPivot.rotation.x +=
+      (targetX - flashlightPivot.rotation.x) * 0.15;
+
+     flashlightPivot.rotation.y +=
+      (targetY - flashlightPivot.rotation.y) * 0.15;
+  }
+
+  renderer.render(scene, camera);
+});
+/* =====================================================================
+   ④  MQTT 구독
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+
+let client = null, 받은수 = 0, 최근수신시각 = [];
+
+function 상태표시(글자, 종류) {
+  $('connState').textContent = 글자;
+  $('dot').className = 'dot' + (종류 ? ' ' + 종류 : '');
+}
+
+$('connBtn').addEventListener('click', () => {
+  const id = ($('idInput').value || '').trim();
+  if (!id) { alert('폰에서 사용한 ID를 입력하세요.'); return; }
+  localStorage.setItem('khu_pcomp_id', id);
+
+  상태표시('연결 중…', '');
+  client = mqtt.connect(BROKER, {
+    clientId: 'twin-' + id + '-' + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 2000,   // 끊기면 mqtt.js 가 알아서 다시 붙습니다
+    connectTimeout: 8000,
+    clean: true
+  });
+
+  client.on('connect', () => {
+    상태표시('연결됨 ✔', 'on');
+    client.subscribe(`khu/pcomp/${id}/sensor`);   // ← 폰이 보내는 우편함을 구독
+  });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('offline',   () => 상태표시('연결 끊김', 'err'));
+  client.on('error', (e) => 상태표시('오류', 'err'));
+
+  client.on('message', (topic, payload) => {
+    let d;
+    try { d = JSON.parse(payload.toString()); }
+    catch (e) { console.warn('JSON 해석 실패', e); return; }
+
+    센서반영(d);
+
+    받은수++;
+    $('count').textContent = 받은수;
+    if (받은수 % 3 === 0) $('payload').textContent = payload.toString();
+
+    // 지연시간 = 지금 시각 - 폰이 보낸 시각 (두 기기 시계가 어긋나면 부정확할 수 있습니다)
+    if (d.t) $('latency').textContent = (Date.now() - d.t) + ' ms';
+
+    // 수신 속도: 최근 1초 동안 몇 개 받았는지 세기
+    const now = performance.now();
+    최근수신시각.push(now);
+    while (최근수신시각.length && now - 최근수신시각[0] > 1000) 최근수신시각.shift();
+    $('rate').textContent = 최근수신시각.length + ' /s';
+  });
+
+  $('connBtn').style.display = 'none';
+  $('disconnBtn').style.display = 'block';
+});
+
+$('disconnBtn').addEventListener('click', () => {
+  if (client) { client.end(true); client = null; }
+  상태표시('연결 끊음', '');
+  $('disconnBtn').style.display = 'none';
+  $('connBtn').style.display = 'block';
+  $('connBtn').textContent = '다시 연결';
+});
+
+window.flashlightRoom = { scene, camera, renderer, objects, sensor, flashlightPivot, FLASHLIGHT }; // 콘솔에서 확인용
+</script>
+</body>
+</html>
